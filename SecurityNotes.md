@@ -125,153 +125,64 @@ create policy user_read_markets on public.markets
 for select
 to user_role
 using (true);
-
-CREATE POLICY "Users can select own tickets"
-ON tickets FOR SELECT
-USING (
-  exists (
-    select 1 from customers c
-    where c.customer_id = tickets.customer_id
-      and c.auth_user_id = auth.uid()
-  )
-);
-
-CREATE POLICY "Users can insert own tickets"
-ON tickets FOR INSERT
-WITH CHECK (
-  exists (
-    select 1 from customers c
-    where c.customer_id = tickets.customer_id
-      and c.auth_user_id = auth.uid()
-  )
-);
-
-CREATE POLICY "Users can update own tickets"
-ON tickets FOR UPDATE
-USING (
-  exists (
-    select 1 from customers c
-    where c.customer_id = tickets.customer_id
-      and c.auth_user_id = auth.uid()
-  )
-)
-WITH CHECK (
-  exists (
-    select 1 from customers c
-    where c.customer_id = tickets.customer_id
-      and c.auth_user_id = auth.uid()
-  )
-);
-
-CREATE POLICY "Users can delete own tickets"
-ON tickets FOR DELETE
-USING (
-  exists (
-    select 1 from customers c
-    where c.customer_id = tickets.customer_id
-      and c.auth_user_id = auth.uid()
-  )
-);
-```
-- payments (users can manage payments for tickets they own; admins full access)
-``` sql
-CREATE POLICY "Admins full access payments"
-ON payments FOR ALL
-USING (exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin'))
-WITH CHECK (exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin'));
-
-CREATE POLICY "Users can select payments for their tickets"
-ON payments FOR SELECT
-USING (
-  exists (
-    select 1 from tickets t
-    join customers c on c.customer_id = t.customer_id
-    where t.ticket_id = payments.ticket_id
-      and c.auth_user_id = auth.uid()
-  )
-);
-
-CREATE POLICY "Users can insert payments for their tickets"
-ON payments FOR INSERT
-WITH CHECK (
-  exists (
-    select 1 from tickets t
-    join customers c on c.customer_id = t.customer_id
-    where t.ticket_id = payments.ticket_id
-      and c.auth_user_id = auth.uid()
-  )
-);
-
-CREATE POLICY "Users can update payments for their tickets"
-ON payments FOR UPDATE
-USING (
-  exists (
-    select 1 from tickets t
-    join customers c on c.customer_id = t.customer_id
-    where t.ticket_id = payments.ticket_id
-      and c.auth_user_id = auth.uid()
-  )
-)
-WITH CHECK (
-  exists (
-    select 1 from tickets t
-    join customers c on c.customer_id = t.customer_id
-    where t.ticket_id = payments.ticket_id
-      and c.auth_user_id = auth.uid()
-  )
-);
-
-CREATE POLICY "Users can delete payments for their tickets"
-ON payments FOR DELETE
-USING (
-  exists (
-    select 1 from tickets t
-    join customers c on c.customer_id = t.customer_id
-    where t.ticket_id = payments.ticket_id
-      and c.auth_user_id = auth.uid()
-  )
-);
-
 ```
 
 ------------------------------------------------------------------------
 
-## 👨‍💼 Admin Policies
+## Admin Policies
 
 Admins have **full access**.
 Use **SECURITY DEFINER** functions with internal role checks as defense-in-depth.
 
-- Delete event (admin only)
+- Delete product using its id (admin only)
 ``` sql
-CREATE OR REPLACE FUNCTION delete_event_by_admin(eid INT)
-RETURNS VOID
-LANGUAGE plpgsql
-SECURITY DEFINER
+create or replace function delete_product_by_admin (product_id_to_delete int)
+returns void
+language plpgsql
+security definer
 AS $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.role = 'admin') THEN
-    RAISE EXCEPTION 'Only admins may call delete_event_by_admin';
-  END IF;
-  DELETE FROM events WHERE event_id = eid;
-END;
+begin
+if not exists (
+select 1
+from pg_roles
+where rolname = 'admin_role'
+and pg_has_role (current_user, 'admin_role', 'member')
+) then
+raise exception 'Permission Denied: Only the admin_role may call delete_product_by_admin';
+end if;
+delete from public.products
+where id = product_id_to_delete;
+end;
 $$;
 ```
-- Delete ticket (admin only):
+- Delete farm producer using their id (admin only):
   
 ``` sql
-CREATE OR REPLACE FUNCTION delete_ticket_by_admin(tid INT)
-RETURNS VOID
-LANGUAGE plpgsql
-SECURITY DEFINER
-AS $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.role = 'admin') THEN
-    RAISE EXCEPTION 'Only admins may call delete_ticket_by_admin';
-  END IF;
-  DELETE FROM tickets WHERE ticket_id = tid;
-END;
+create or replace function delete_producer_by_admin (producer_id_to_delete int)
+returns void  
+language plpgsql
+security definer
+as $$
+begin
+if not exists (
+  select 1
+  from pg_roles
+  where rolname = 'admin_role'
+  and pg_has_role (current_user, 'admin_role', 'member')
+) then
+raise exception 'Permission Denied: Only the admin_role may call delete_producer_by_admin';
+end if;
+delete from public.producers
+where id = producer_id_to_delete;
+end;
 $$;
 
+```
+- The necessary final step to grant execution permission for the admin roles to call the function
+
+``` sql
+grant execute on function delete_product_by_admin (int) to admin_role;
+grant execute on function delete_producer_by_admin (int) to admin_role;
 ```
 
 ------------------------------------------------------------------------
@@ -279,53 +190,45 @@ $$;
 ## ⚡️ Testing Roles & Policies
 
 ### ✅ User Tests
-1.  **SELECT own tickets** (works)\
-2.  **INSERT a new ticket purchase** (works)\
-3.  **UPDATE or DELETE tickets/payments** (blocked)\
-   
-- **Create test accounts** in Supabase Auth:
- - Admin user (set profiles.role = 'admin')
- - Regular user A and user B
-- **Create/Update profiles** or use signup trigger to auto-create a profile for each auth.users row.. **Populate sample data** (events, customers with auth_user_id, tickets, payments). Ensure customers.auth_user_id points to users.
-- Test with **supabase** :
- -Sign in as regular user → request tickets and payments. Confirm user only sees their own.
- - Try to perform admin-only actions (update/delete events) as regular user → **should fail**.
-- Sign in as **admin** → confirm full access, call admin RPCs (delete_event_by_admin).
-- Use **SQL Editor** for debugging only (SQL Editor runs as service_role and bypasses RLS — do not use this for policy tests).
+The goal is to confirm the user can read all data but can only modify rows where ``` owner_role = current_role.```
+1.  **SELECT all products** (works)
+2.  **READ all from markets** (works)
+3.  **INSERT own product (product_name, producer_name, harvest_season, price_per_unit)** (works)
+4.  **UPDATE or DELETE unowned producer or product** (blocked)
 
 ### ✅ Admin Tests
 
-1.  **UPDATE event details** (works)\
-2.  **DELETE event**(works)\
-3.  **SELECT all tickets** (works)
+1.  **UPDATE unowned producers** (works)
+2.  **DELETE farm/producers**(works)
+3.  **SELECT all markets** (works)
 
 ------------------------------------------------------------------------
 
-<img width="1903" height="832" alt="image" src="https://github.com/user-attachments/assets/58d58dc6-db66-4607-8d37-d2769784097b" />
+<img width="1314" height="591" alt="image" src="https://github.com/user-attachments/assets/519b7630-a442-4131-9e95-ad7c641fb376" />
+
+<img width="998" height="297" alt="image" src="https://github.com/user-attachments/assets/dded2e96-3c4a-4a9f-b513-bc4f479c3c36" />
+
+
 
 
 ## 🛠 Admin-only Function
 
-Example: Admin deletes an event safely.
+Example: Admin deletes a product safely.
 
 ``` sql
-CREATE OR REPLACE FUNCTION delete_event_safe(event_id INT)
-RETURNS VOID
-LANGUAGE SQL
-SECURITY DEFINER
-AS $$
-  DELETE FROM events WHERE event_id = $1;
-$$;
+select delete_product_by_admin (
+ (select id from public.products where product_name = 'Strawberry' limit 1) 
+);
 
 ```
 
 ------------------------------------------------------------------------
 
-<img width="1901" height="796" alt="image" src="https://github.com/user-attachments/assets/85a3c200-c0d4-408a-a43d-456e601bf6d4" />
+<img width="1362" height="349" alt="image" src="https://github.com/user-attachments/assets/982bc25b-e395-48fb-9440-47c064773068" />
 
 
 ## 📎 Reference
 
--   Linked to [README.md](https://github.com/Evans-dotcom/Data-Tools/blob/Data_Fundamentals-Branch/ReadMe.md)
+-   Linked to [README.md](https://github.com/esxrom/Horticultural-Produce-Market-SQL-Database-Project/blob/tonyesxrom-patch-1/README.md)
 -   Supabase Policies: <https://supabase.com/docs/guides/database/postgres/row-level-security>
   
