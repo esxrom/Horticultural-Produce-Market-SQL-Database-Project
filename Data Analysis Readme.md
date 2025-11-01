@@ -298,9 +298,9 @@ print(ggplotly(p2, tooltip = "text"))
 ## Authors
 
 **Project Owner / Maintainer**  
-- Your Name Here (replace with your name)  
-- GitHub: @your-github  
-- Contact: your.email@example.com
+- Antony Esirom
+- GitHub: github.com/esxrom
+- Contact: tonyesirom@gmail.com
 
 ---
 
